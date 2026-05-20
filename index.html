@@ -569,65 +569,121 @@ function clearListeners(){listeners.forEach(function(l){l.ref.off(l.event,l.hand
 //  SUARA NOTIFIKASI (Web Audio API — tanpa file eksternal)
 // ─────────────────────────────────────────────────────────
 var _audioCtx=null;
-function getAudioCtx(){if(!_audioCtx)_audioCtx=new(window.AudioContext||window.webkitAudioContext)();return _audioCtx;}
+var _audioUnlocked=false;
+
+// Unlock AudioContext saat pertama kali user interaksi
+function unlockAudio(){
+  if(_audioUnlocked)return;
+  try{
+    _audioCtx=new(window.AudioContext||window.webkitAudioContext)();
+    // Mainkan suara senyap untuk unlock
+    var buf=_audioCtx.createBuffer(1,1,22050);
+    var src=_audioCtx.createBufferSource();
+    src.buffer=buf;src.connect(_audioCtx.destination);src.start(0);
+    _audioUnlocked=true;
+    console.log('[Audio] Unlocked, state:',_audioCtx.state);
+  }catch(e){console.warn('[Audio] Unlock gagal:',e);}
+}
+// Daftarkan unlock di setiap interaksi
+['touchstart','touchend','mousedown','keydown','click'].forEach(function(ev){
+  document.addEventListener(ev,unlockAudio,{once:false,passive:true});
+});
 
 function playSound(type){
-  try{
-    var ctx=getAudioCtx();
-    if(ctx.state==='suspended')ctx.resume();
-    if(type==='pesanan_baru'){
-      // Ding-dong menarik untuk pesanan baru di warmindo
-      var notes=[523,659,784,1047]; // C5 E5 G5 C6
-      notes.forEach(function(freq,i){
-        var o=ctx.createOscillator();var g=ctx.createGain();
+  if(!_suaraAktif)return;
+  // Coba unlock dulu jika belum
+  if(!_audioCtx){
+    try{_audioCtx=new(window.AudioContext||window.webkitAudioContext)();}
+    catch(e){console.warn('[Audio] Tidak bisa buat AudioContext:',e);return;}
+  }
+  var ctx=_audioCtx;
+  // Resume jika suspended (autoplay policy browser)
+  var doPlay=function(){
+    try{
+      if(type==='pesanan_baru'){
+        // Ding-dong naik: C5 E5 G5 C6
+        [523,659,784,1047].forEach(function(freq,i){
+          var o=ctx.createOscillator(),g=ctx.createGain();
+          o.connect(g);g.connect(ctx.destination);
+          o.type='sine';o.frequency.value=freq;
+          var t=ctx.currentTime+i*0.15;
+          g.gain.setValueAtTime(0,t);
+          g.gain.linearRampToValueAtTime(0.4,t+0.05);
+          g.gain.exponentialRampToValueAtTime(0.001,t+0.35);
+          o.start(t);o.stop(t+0.36);
+        });
+      } else if(type==='status_update'){
+        // Ping naik singkat
+        var o=ctx.createOscillator(),g=ctx.createGain();
         o.connect(g);g.connect(ctx.destination);
-        o.type='sine';o.frequency.value=freq;
-        var t=ctx.currentTime+i*0.13;
-        g.gain.setValueAtTime(0,t);
-        g.gain.linearRampToValueAtTime(0.35,t+0.04);
-        g.gain.exponentialRampToValueAtTime(0.001,t+0.28);
-        o.start(t);o.stop(t+0.3);
-      });
-    } else if(type==='status_update'){
-      // Ping singkat untuk update status pesanan karyawan
-      var o=ctx.createOscillator();var g=ctx.createGain();
-      o.connect(g);g.connect(ctx.destination);
-      o.type='sine';o.frequency.setValueAtTime(880,ctx.currentTime);
-      o.frequency.exponentialRampToValueAtTime(1100,ctx.currentTime+0.08);
-      g.gain.setValueAtTime(0.3,ctx.currentTime);
-      g.gain.exponentialRampToValueAtTime(0.001,ctx.currentTime+0.25);
-      o.start();o.stop(ctx.currentTime+0.26);
-    } else if(type==='pesanan_kirim'){
-      // Konfirmasi saat karyawan submit pesanan
-      [440,554,659].forEach(function(freq,i){
-        var o=ctx.createOscillator();var g=ctx.createGain();
-        o.connect(g);g.connect(ctx.destination);
-        o.type='triangle';o.frequency.value=freq;
-        var t=ctx.currentTime+i*0.1;
-        g.gain.setValueAtTime(0,t);g.gain.linearRampToValueAtTime(0.25,t+0.03);
-        g.gain.exponentialRampToValueAtTime(0.001,t+0.2);
-        o.start(t);o.stop(t+0.22);
-      });
-    }
-  }catch(e){console.warn('Audio error:',e);}
+        o.type='sine';
+        o.frequency.setValueAtTime(800,ctx.currentTime);
+        o.frequency.exponentialRampToValueAtTime(1200,ctx.currentTime+0.1);
+        g.gain.setValueAtTime(0.35,ctx.currentTime);
+        g.gain.exponentialRampToValueAtTime(0.001,ctx.currentTime+0.3);
+        o.start(ctx.currentTime);o.stop(ctx.currentTime+0.31);
+      } else if(type==='pesanan_kirim'){
+        // 3 nada konfirmasi
+        [440,554,659].forEach(function(freq,i){
+          var o=ctx.createOscillator(),g=ctx.createGain();
+          o.connect(g);g.connect(ctx.destination);
+          o.type='triangle';o.frequency.value=freq;
+          var t=ctx.currentTime+i*0.11;
+          g.gain.setValueAtTime(0,t);
+          g.gain.linearRampToValueAtTime(0.28,t+0.03);
+          g.gain.exponentialRampToValueAtTime(0.001,t+0.22);
+          o.start(t);o.stop(t+0.23);
+        });
+      } else if(type==='test'){
+        // Suara test saat toggle aktifkan
+        [523,659,784].forEach(function(freq,i){
+          var o=ctx.createOscillator(),g=ctx.createGain();
+          o.connect(g);g.connect(ctx.destination);
+          o.type='sine';o.frequency.value=freq;
+          var t=ctx.currentTime+i*0.12;
+          g.gain.setValueAtTime(0,t);
+          g.gain.linearRampToValueAtTime(0.3,t+0.04);
+          g.gain.exponentialRampToValueAtTime(0.001,t+0.25);
+          o.start(t);o.stop(t+0.26);
+        });
+      }
+    }catch(e){console.warn('[Audio] playSound error:',e);}
+  };
+
+  if(ctx.state==='suspended'){
+    ctx.resume().then(doPlay).catch(function(e){console.warn('[Audio] resume gagal:',e);});
+  } else {
+    doPlay();
+  }
 }
+
 var _suaraAktif=true;
 function toggleSuara(){
+  // Unlock audio pada interaksi pertama kali toggle
+  unlockAudio();
   _suaraAktif=!_suaraAktif;
   updateSuaraBtn();
-  showToast(_suaraAktif?'🔊 Suara notifikasi aktif':'🔇 Suara notifikasi mati',_suaraAktif?'ok':'warn');
   localStorage.setItem('myk_suara',_suaraAktif?'1':'0');
+  if(_suaraAktif){
+    showToast('🔊 Suara notifikasi aktif','ok');
+    // Mainkan suara test supaya user tahu berhasil
+    setTimeout(function(){playSound('test');},100);
+  } else {
+    showToast('🔇 Suara notifikasi mati','warn');
+  }
 }
 function updateSuaraBtn(){
   ['k-suara-btn','w-suara-btn'].forEach(function(id){
     var btn=document.getElementById(id);if(!btn)return;
-    btn.textContent=_suaraAktif?'🔊':'🔇';
-    btn.style.background=_suaraAktif?'rgba(29,191,115,.4)':'rgba(255,255,255,.2)';
+    btn.innerHTML=_suaraAktif?'🔊':'🔇';
+    btn.style.background=_suaraAktif?'rgba(29,191,115,.4)':'rgba(255,255,255,.25)';
     btn.title=_suaraAktif?'Suara Aktif — klik untuk matikan':'Suara Mati — klik untuk aktifkan';
   });
 }
-// Load preferensi suara dari localStorage
+// Load preferensi dari localStorage
 (function(){var s=localStorage.getItem('myk_suara');if(s==='0')_suaraAktif=false;})();
+
+function toggleNotif(){
   if(!('Notification'in window)){showToast('Browser tidak mendukung notifikasi');return;}
   if(Notification.permission==='granted'){showToast('✅ Notifikasi sudah aktif','ok');return;}
   Notification.requestPermission().then(function(p){notifPermission=p==='granted';updateNotifBtn();if(notifPermission)showToast('✅ Notifikasi diaktifkan!','ok');else showToast('Notifikasi ditolak');});
