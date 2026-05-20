@@ -2100,7 +2100,14 @@ function buildRincianHariPerKaryawan(pesananTgl){
 function downloadTagihanCSV(){
   var pesanan=cache.pesanan.slice();
   if(pesanan.length===0){showToast('Tidak ada data pesanan');return;}
-  // Group by tanggal
+  // Sanitize
+  pesanan=pesanan.map(function(p){
+    return Object.assign({},p,{
+      harga:Number(p.harga)||0,beban:Number(p.beban)||0,selisih:Number(p.selisih)||0,
+      qty:Number(p.qty)||1,karyawan:p.karyawan||'-',menu:p.menu||'-',
+      status:p.status||'-',waktu:p.waktu||'-',catatan:p.catatan||'',tanggal:p.tanggal||today()
+    });
+  });
   var byDate={};
   pesanan.forEach(function(p){if(!byDate[p.tanggal])byDate[p.tanggal]=[];byDate[p.tanggal].push(p);});
   var dates=Object.keys(byDate).sort();
@@ -2129,13 +2136,29 @@ function downloadTagihanCSV(){
 }
 
 function downloadTagihanPDF(){
-  var pesanan=cache.pesanan.slice();
-  if(pesanan.length===0){showToast('Tidak ada data pesanan');return;}
+  var pesananRaw=cache.pesanan.slice();
+  if(pesananRaw.length===0){showToast('Tidak ada data pesanan');return;}
+
+  // Sanitize + filter data rusak (nama '-' atau harga 0 dan menu '-')
+  var pesanan=pesananRaw.map(function(p){
+    return Object.assign({},p,{
+      harga:Number(p.harga)||0, beban:Number(p.beban)||0, selisih:Number(p.selisih)||0,
+      qty:Number(p.qty)||1, karyawan:p.karyawan||'', menu:p.menu||'',
+      status:p.status||'-', waktu:p.waktu||'-', catatan:p.catatan||'',
+      tanggal:p.tanggal||today()
+    });
+  }).filter(function(p){
+    // Buang baris rusak: nama kosong ATAU (harga 0 DAN menu kosong)
+    return p.karyawan&&p.karyawan!=='-'&&!(p.harga===0&&(!p.menu||p.menu==='-'));
+  });
+
+  if(pesanan.length===0){showToast('Tidak ada data valid untuk dicetak');return;}
+
   var byDate={};
   pesanan.forEach(function(p){if(!byDate[p.tanggal])byDate[p.tanggal]=[];byDate[p.tanggal].push(p);});
   var dates=Object.keys(byDate).sort();
 
-  // Kalkulasi summary pakai logika kumulatif per kid+hari
+  // Summary kumulatif per kid+hari (konsisten dengan rekap)
   var _tagihanByKidDate={};
   pesanan.forEach(function(p){
     var key=p.kid+'|'+p.tanggal;
@@ -2145,11 +2168,10 @@ function downloadTagihanPDF(){
   });
   var totalBebanAll=Object.values(_tagihanByKidDate).reduce(function(a,d){return a+Math.min(d.total,BUDGET);},0);
   var totalOverAll=Object.values(_tagihanByKidDate).reduce(function(a,d){
-    var overTotal=Math.max(0,d.total-BUDGET);
-    var overBayar=Math.max(0,d.lunas-BUDGET);
-    return a+Math.max(0,overTotal-overBayar);
+    return a+Math.max(0,Math.max(0,d.total-BUDGET)-Math.max(0,d.lunas-BUDGET));
   },0);
 
+  // Rincian per hari
   var hariBlocks=dates.map(function(tgl){
     var items=byDate[tgl];
     var dtH=items.reduce(function(a,p){return a+p.harga;},0);
@@ -2162,10 +2184,9 @@ function downloadTagihanPDF(){
       if(p._lunas)_hariByKid[p.kid].lunas+=p.harga;
     });
     var dtO=Object.values(_hariByKid).reduce(function(a,d){
-      var overTotal=Math.max(0,d.total-BUDGET);
-      var overBayar=Math.max(0,d.lunas-BUDGET);
-      return a+Math.max(0,overTotal-overBayar);
+      return a+Math.max(0,Math.max(0,d.total-BUDGET)-Math.max(0,d.lunas-BUDGET));
     },0);
+
     var rows=items.map(function(p,i){
       var overCell;
       if(p.selisih>0&&p._lunas){
@@ -2204,13 +2225,24 @@ function downloadTagihanPDF(){
       +'</table></div>';
   }).join('');
 
-  // Tagihan karyawan aktif
-  var tagihanRows=Object.entries(cache.tagihan).filter(function(e){return e[1]>0;}).map(function(e){
-    var k=cache.karyawan.find(function(x){return x.id===e[0];});
-    var nama=k?k.nama:e[0];
-    var jml=cache.pesanan.filter(function(p){return p.kid===e[0]&&p.selisih>0;}).length;
-    return'<tr><td style="padding:7px 10px;font-weight:700">'+nama+'</td><td style="padding:7px 10px">'+jml+'× over budget</td><td style="padding:7px 10px;font-weight:800;color:#E53935">Rp '+e[1].toLocaleString('id')+'</td><td style="padding:7px 10px"><span style="background:#FFEBEE;color:#E53935;padding:2px 8px;border-radius:99px;font-size:11px;font-weight:700">Belum Lunas</span></td></tr>';
-  }).join('');
+  // Tagihan belum lunas — pakai hitungTotalOverKid() sama persis dengan tab Tagihan
+  var tagihanRows=cache.karyawan.map(function(k){
+    var sisa=hitungTotalOverKid(k.id);
+    if(sisa<=0)return'';
+    // Hitung berapa hari over
+    var hariOverList=Object.values(_tagihanByKidDate).filter(function(d,_,arr){
+      // rebuild key filter by kid
+      return true; // akan difilter manual di bawah
+    });
+    var _kidDate=Object.entries(_tagihanByKidDate);
+    var hariOver=_kidDate.filter(function(e){
+      return e[0].indexOf(k.id+'|')===0&&Math.max(0,e[1].total-BUDGET)>0;
+    }).length;
+    return'<tr><td style="padding:7px 10px;font-weight:700">'+k.nama+'</td>'
+      +'<td style="padding:7px 10px">'+hariOver+'× hari over budget</td>'
+      +'<td style="padding:7px 10px;font-weight:800;color:#E53935">Rp '+sisa.toLocaleString('id')+'</td>'
+      +'<td style="padding:7px 10px"><span style="background:#FFEBEE;color:#E53935;padding:2px 8px;border-radius:99px;font-size:11px;font-weight:700">Belum Lunas</span></td></tr>';
+  }).filter(Boolean).join('');
 
   var html='<!DOCTYPE html><html><head><meta charset="UTF-8"><title>Rincian Tagihan MakanYuk</title>'
     +'<style>body{font-family:Arial,sans-serif;margin:24px;color:#111}@media print{.no-print{display:none}}</style></head><body>'
@@ -2218,16 +2250,13 @@ function downloadTagihanPDF(){
     +'<div style="font-size:22px;font-weight:900;color:#fff">🍱 MakanYuk — Rincian Tagihan Harian</div>'
     +'<div style="font-size:12px;color:rgba(255,255,255,.8);margin-top:4px">Dicetak: '+new Date().toLocaleString('id-ID')+' · Total '+pesanan.length+' pesanan · '+dates.length+' hari</div>'
     +'</div>'
-    // Ringkasan
     +'<div style="display:flex;gap:12px;margin-bottom:20px">'
     +'<div style="flex:1;background:#E6F9F0;border-radius:8px;padding:14px"><div style="font-size:10px;color:#166534;font-weight:700">BEBAN PERUSAHAAN</div><div style="font-size:18px;font-weight:800;color:#1DBF73">Rp '+totalBebanAll.toLocaleString('id')+'</div></div>'
     +'<div style="flex:1;background:'+(totalOverAll>0?'#FFEBEE':'#E6F9F0')+';border-radius:8px;padding:14px"><div style="font-size:10px;color:'+(totalOverAll>0?'#B71C1C':'#166534')+';font-weight:700">TOTAL OVER BUDGET</div><div style="font-size:18px;font-weight:800;color:'+(totalOverAll>0?'#E53935':'#1DBF73')+'">Rp '+totalOverAll.toLocaleString('id')+'</div></div>'
-    +'<div style="flex:1;background:#F7F7F8;border-radius:8px;padding:14px"><div style="font-size:10px;color:#9CA3AF;font-weight:700">TOTAL PESANAN</div><div style="font-size:18px;font-weight:800">'+pesanan.length+'</div></div>'
+    +'<div style="flex:1;background:#F7F7F8;border-radius:8px;padding:14px"><div style="font-size:10px;color:#9CA3AF;font-weight:700">TOTAL PESANAN VALID</div><div style="font-size:18px;font-weight:800">'+pesanan.length+'</div></div>'
     +'</div>'
-    // Tagihan belum lunas
     +(tagihanRows?'<h3 style="font-size:14px;font-weight:800;margin-bottom:8px;color:#E53935">💳 Tagihan Belum Lunas</h3>'
       +'<table style="width:100%;border-collapse:collapse;font-size:13px;margin-bottom:24px;border:1px solid #eee"><thead><tr style="background:#FFEBEE"><th style="padding:8px 10px;text-align:left">Karyawan</th><th style="padding:8px 10px;text-align:left">Over Budget</th><th style="padding:8px 10px;text-align:left">Tagihan</th><th style="padding:8px 10px;text-align:left">Status</th></tr></thead><tbody>'+tagihanRows+'</tbody></table>':'')
-    // Rincian per hari
     +'<h3 style="font-size:14px;font-weight:800;margin-bottom:12px;color:#FF6B35">📆 Rincian Per Hari</h3>'
     +hariBlocks
     +'<script>window.onload=function(){window.print();}<\/script></body></html>';
